@@ -41,6 +41,13 @@ dependencies:
   permission_handler: ^11.0.0
   flutter_chat_ui: ^1.6.0
   flutter_chat_types: ^3.6.0
+  shelf: ^1.4.2
+  shelf_router: ^1.1.4
+  shelf_multipart: ^1.0.0
+  dart_openai: ^5.1.0
+  whisper_ggml: ^1.4.0
+  record: ^6.0.0
+  path_provider: ^2.1.0
 
 dev_dependencies:
   flutter_test:

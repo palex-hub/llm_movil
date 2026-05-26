@@ -1,5 +1,9 @@
 export 'models/chat_message.dart';
-export 'services/permission_service.dart';
-export 'services/llm_service.dart';
 export 'services/chat_engine.dart';
+export 'services/chat_theme.dart';
+export 'services/tool_definitions.dart';
+export 'services/tool_executor.dart';
 export 'screens/chat_screen.dart';
+export 'audio/audio_model.dart';
+export 'audio/audio_recorder.dart';
+export 'audio/audio_handler.dart';

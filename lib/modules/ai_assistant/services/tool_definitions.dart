@@ -1,3 +1,5 @@
+import 'package:dart_openai/dart_openai.dart';
+
 class ToolArg {
   final String name;
   final String type;
@@ -89,6 +91,48 @@ class ToolDefinition {
       ],
     ),
   ];
+
+  OpenAIToolModel toOpenAIFormat() {
+    final properties = <String, dynamic>{};
+    final required = <String>[];
+    for (final a in args) {
+      final type = a.type == 'int'
+          ? 'integer'
+          : a.type == 'number'
+              ? 'number'
+              : a.type == 'array'
+                  ? 'array'
+                  : 'string';
+      if (a.type == 'array') {
+        properties[a.name] = {
+          'type': 'array',
+          'items': {'type': 'object'},
+          'description': a.hint ?? '',
+        };
+      } else {
+        properties[a.name] = {
+          'type': type,
+          'description': a.hint ?? '',
+        };
+      }
+      if (a.required) required.add(a.name);
+    }
+    return OpenAIToolModel(
+      type: 'function',
+      function: OpenAIFunctionModel(
+        name: name,
+        description: description,
+        parametersSchema: {
+          'type': 'object',
+          'properties': properties,
+          if (required.isNotEmpty) 'required': required,
+        },
+      ),
+    );
+  }
+
+  static List<OpenAIToolModel> toolsToOpenAI() =>
+      all.map((t) => t.toOpenAIFormat()).toList();
 
   static String get systemPrompt {
     final buf = StringBuffer();
