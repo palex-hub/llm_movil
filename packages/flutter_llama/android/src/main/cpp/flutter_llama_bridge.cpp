@@ -28,6 +28,7 @@ static bool g_should_stop = false;
 static int g_n_pos = 0;
 static int g_n_prompt = 0;
 static int g_max_tokens = 0;
+static int g_preprompt_tokens = 0;
 
 extern "C" {
 
@@ -117,6 +118,51 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeInitModel(
     return JNI_TRUE;
 }
 
+// Set preprompt (tools + system, stays in KV cache permanently)
+JNIEXPORT void JNICALL
+Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeSetPrePrompt(
+    JNIEnv* env,
+    jobject thiz,
+    jstring preprompt
+) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+
+    if (!g_model || !g_context || !g_vocab) {
+        LOGE("Model not loaded");
+        return;
+    }
+
+    const char* pstr = env->GetStringUTFChars(preprompt, nullptr);
+    LOGI("Setting preprompt");
+
+    std::string text(pstr);
+    env->ReleaseStringUTFChars(preprompt, pstr);
+
+    // Clear KV cache and re-encode preprompt from scratch
+    llama_memory_clear(llama_get_memory(g_context), true);
+
+    // Tokenize preprompt with BOS
+    const int n = -llama_tokenize(g_vocab, text.c_str(), text.size(), NULL, 0, true, true);
+    if (n <= 0) {
+        LOGE("Failed to tokenize preprompt");
+        g_preprompt_tokens = 0;
+        return;
+    }
+    std::vector<llama_token> toks(n);
+    llama_tokenize(g_vocab, text.c_str(), text.size(), toks.data(), toks.size(), true, true);
+
+    // Decode preprompt into KV cache
+    llama_batch batch = llama_batch_get_one(toks.data(), toks.size());
+    if (llama_decode(g_context, batch) != 0) {
+        LOGE("Failed to decode preprompt");
+        g_preprompt_tokens = 0;
+        return;
+    }
+
+    g_preprompt_tokens = n;
+    LOGI("Preprompt set: %d tokens", g_preprompt_tokens);
+}
+
 // Generate text
 JNIEXPORT jobject JNICALL
 Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeGenerate(
@@ -137,28 +183,30 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeGenerate(
         return nullptr;
     }
     
-    // Clear KV cache to ensure clean state
-    llama_memory_clear(llama_get_memory(g_context), true);
+    // Keep preprompt in KV cache, clear everything after it
+    llama_memory_seq_rm(llama_get_memory(g_context), -1, g_preprompt_tokens, -1);
 
     const char* prompt_str = env->GetStringUTFChars(prompt, nullptr);
-    LOGI("Generating with prompt: %.50s...", prompt_str);
+    LOGI("Generating with user msg: %.50s...", prompt_str);
     
     std::string prompt_text(prompt_str);
     env->ReleaseStringUTFChars(prompt, prompt_str);
     
-    // Tokenize prompt
-    const int n_prompt = -llama_tokenize(g_vocab, prompt_text.c_str(), prompt_text.size(), NULL, 0, true, true);
+    // Tokenize ONLY user message (no BOS — it's already in preprompt)
+    const int n_prompt = -llama_tokenize(g_vocab, prompt_text.c_str(), prompt_text.size(), NULL, 0, false, true);
+    if (n_prompt <= 0) {
+        LOGE("Failed to tokenize prompt");
+        return nullptr;
+    }
     std::vector<llama_token> prompt_tokens(n_prompt);
     
-    if (llama_tokenize(g_vocab, prompt_text.c_str(), prompt_text.size(), prompt_tokens.data(), prompt_tokens.size(), true, true) < 0) {
+    if (llama_tokenize(g_vocab, prompt_text.c_str(), prompt_text.size(), prompt_tokens.data(), prompt_tokens.size(), false, true) < 0) {
         LOGE("Failed to tokenize prompt");
         return nullptr;
     }
     
-    // Create batch
+    // Create batch and decode
     llama_batch batch = llama_batch_get_one(prompt_tokens.data(), prompt_tokens.size());
-    
-    // Decode prompt
     if (llama_decode(g_context, batch) != 0) {
         LOGE("Failed to decode prompt");
         return nullptr;
@@ -187,7 +235,7 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeGenerate(
     // Generate tokens
     std::string result;
     int n_generated = 0;
-    int n_pos = prompt_tokens.size();
+    int n_pos = g_preprompt_tokens + n_prompt;
     
     g_should_stop = false;
     
@@ -271,18 +319,22 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeGenerateStreamInit(
     
     g_should_stop = false;
     
-    // Clear KV cache to ensure clean state
-    llama_memory_clear(llama_get_memory(g_context), true);
+    // Keep preprompt in KV cache, clear everything after it
+    llama_memory_seq_rm(llama_get_memory(g_context), -1, g_preprompt_tokens, -1);
 
     const char* prompt_str = env->GetStringUTFChars(prompt, nullptr);
     std::string prompt_text(prompt_str);
     env->ReleaseStringUTFChars(prompt, prompt_str);
     
-    // Tokenize prompt
-    const int n_prompt = -llama_tokenize(g_vocab, prompt_text.c_str(), prompt_text.size(), NULL, 0, true, true);
+    // Tokenize ONLY user message (no BOS)
+    const int n_prompt = -llama_tokenize(g_vocab, prompt_text.c_str(), prompt_text.size(), NULL, 0, false, true);
+    if (n_prompt <= 0) {
+        LOGE("Failed to tokenize prompt");
+        return;
+    }
     std::vector<llama_token> prompt_tokens(n_prompt);
     
-    if (llama_tokenize(g_vocab, prompt_text.c_str(), prompt_text.size(), prompt_tokens.data(), prompt_tokens.size(), true, true) < 0) {
+    if (llama_tokenize(g_vocab, prompt_text.c_str(), prompt_text.size(), prompt_tokens.data(), prompt_tokens.size(), false, true) < 0) {
         LOGE("Failed to tokenize prompt");
         return;
     }
@@ -293,7 +345,7 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeGenerateStreamInit(
         LOGE("Failed to decode prompt");
         return;
     }
-    g_n_pos = n_prompt;
+    g_n_pos = g_preprompt_tokens + n_prompt;
     g_n_prompt = n_prompt;
     g_max_tokens = max_tokens;
     
@@ -430,6 +482,8 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeFreeModel(
     std::lock_guard<std::mutex> lock(g_mutex);
     
     LOGI("Freeing model");
+    
+    g_preprompt_tokens = 0;
     
     if (g_sampler) {
         llama_sampler_free(g_sampler);

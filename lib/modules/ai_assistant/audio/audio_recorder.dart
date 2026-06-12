@@ -1,8 +1,13 @@
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'audio_config.dart';
+
 class MicCapture {
   final _recorder = AudioRecorder();
+  final AudioConfig _config;
+
+  MicCapture({AudioConfig? config}) : _config = config ?? const AudioConfig();
 
   Future<bool> requestPermission() async {
     return await _recorder.hasPermission();
@@ -16,8 +21,8 @@ class MicCapture {
     await _recorder.start(
       RecordConfig(
         encoder: AudioEncoder.wav,
-        sampleRate: 16000,
-        numChannels: 1,
+        sampleRate: _config.sampleRate,
+        numChannels: _config.numChannels,
       ),
       path: path,
     );

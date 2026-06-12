@@ -67,6 +67,7 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
     override fun onMethodCall(call: MethodCall, result: Result) {
         when (call.method) {
             "loadModel" -> loadModel(call, result)
+            "setPrePrompt" -> setPrePrompt(call, result)
             "generate" -> generate(call, result)
             "generateStream" -> generateStream(call, result)
             "unloadModel" -> unloadModel(result)
@@ -91,6 +92,34 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
     override fun onCancel(arguments: Any?) {
         eventSink = null
         shouldStop = true
+    }
+
+    // MARK: - Set PrePrompt
+
+    private fun setPrePrompt(call: MethodCall, result: Result) {
+        executor.execute {
+            try {
+                val preprompt = call.argument<String>("preprompt")
+                if (preprompt == null) {
+                    mainHandler.post {
+                        result.error("INVALID_ARGS", "Missing preprompt", null)
+                    }
+                    return@execute
+                }
+
+                nativeSetPrePrompt(preprompt)
+                Log.d(TAG, "Preprompt set (${preprompt.length} chars)")
+
+                mainHandler.post {
+                    result.success(null)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error setting preprompt", e)
+                mainHandler.post {
+                    result.error("EXCEPTION", "Error setting preprompt: ${e.message}", null)
+                }
+            }
+        }
     }
 
     // MARK: - Load Model
@@ -330,6 +359,10 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
     }
 
     // MARK: - Native Methods (JNI)
+
+    private external fun nativeSetPrePrompt(
+        preprompt: String
+    )
 
     private external fun nativeInitModel(
         modelPath: String,

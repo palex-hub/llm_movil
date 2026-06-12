@@ -157,6 +157,32 @@ class FlutterLlama {
     }
   }
 
+  /// Set preprompt (system prompt + tools) that stays in KV cache permanently
+  Future<void> setPrePrompt(String preprompt) async {
+    if (!_isModelLoaded) {
+      throw StateError('Model not loaded. Call loadModel() first.');
+    }
+
+    try {
+      if (kDebugMode) {
+        print('[FlutterLlama] Setting preprompt');
+      }
+
+      await _channel.invokeMethod<void>('setPrePrompt', {
+        'preprompt': preprompt,
+      });
+
+      if (kDebugMode) {
+        print('[FlutterLlama] Preprompt set');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('[FlutterLlama] Error setting preprompt: $e');
+      }
+      rethrow;
+    }
+  }
+
   /// Unload the current model and free resources
   Future<void> unloadModel() async {
     try {

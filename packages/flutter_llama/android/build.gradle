@@ -59,7 +59,8 @@ android {
                 arguments '-DANDROID_STL=c++_shared',
                           '-DANDROID_PLATFORM=android-28',
                           '-DCMAKE_BUILD_TYPE=Release',
-                          '-DGGML_VULKAN=ON'
+                          '-DGGML_VULKAN=ON',
+                          '-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod'
             }
         }
     }

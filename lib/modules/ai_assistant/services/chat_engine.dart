@@ -1,20 +1,22 @@
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
 import 'package:dart_openai/dart_openai.dart';
-import 'package:flutter_llama/flutter_llama.dart';
 
+import '../audio/audio_config.dart';
 import '../audio/audio_model.dart';
 import '../audio/audio_recorder.dart';
 import 'chat_loop.dart';
 import 'local_api_server.dart';
+import 'llm_bridge.dart';
+import 'tool_service.dart';
 import '../models/react_event.dart';
 
 class ChatEngine {
+  final LlmBridge _bridge = LlmBridge();
+  late final LocalApiServer _server = LocalApiServer(_bridge);
   final ChatLoop _loop = ChatLoop();
-  final LocalApiServer _server = LocalApiServer();
-  final AudioModel _audioModel = AudioModel();
-  final MicCapture _audioRecorder = MicCapture();
+  final AudioModel _audioModel;
+  final MicCapture _audioRecorder;
+  ToolService? _toolService;
 
   bool _initialized = false;
   bool _isRecording = false;
@@ -23,12 +25,25 @@ class ChatEngine {
   bool get isRecording => _isRecording;
   AudioModel get audioModel => _audioModel;
   MicCapture get audioRecorder => _audioRecorder;
+  LlmBridge get bridge => _bridge;
+  ToolService? get toolService => _toolService;
 
-  Future<bool> init(String apiUrl) async {
+  ChatEngine({AudioConfig? config})
+      : _audioModel = AudioModel(config: config),
+        _audioRecorder = MicCapture(config: config);
+
+  Future<void> fetchTools(String specUrl) async {
+    _toolService = ToolService(specUrl: specUrl);
+    await _toolService!.fetchTools();
+    _loop.setTools(_toolService!);
+    final systemPrompt = _toolService!.buildSystemPrompt(null);
+    _bridge.cacheSystemPrompt(systemPrompt);
+  }
+
+  Future<bool> init({String apiUrl = 'http://127.0.0.1:8080'}) async {
     OpenAI.baseUrl = apiUrl;
     OpenAI.apiKey = 'sk-noop';
     OpenAI.requestsTimeOut = const Duration(minutes: 2);
-    _server.registerAudioModel(_audioModel);
     _initialized = true;
     return true;
   }
@@ -42,16 +57,16 @@ class ChatEngine {
     await _server.stop();
   }
 
-  Future<bool> initAudioModel(String modelPath) async {
-    return await _audioModel.init(modelPath);
+  Future<bool> initAudioModel() async {
+    return await _audioModel.init();
   }
 
-  Future<bool> initLLMModel(String modelPath) async {
-    final config = LlamaConfig(
-      modelPath: modelPath,
-      nGpuLayers: -1,
-    );
-    return await FlutterLlama.instance.loadModel(config);
+  Future<bool> initLLMModel(String modelPath, ModelVariant variant) async {
+    return await _bridge.load(modelPath, variant);
+  }
+
+  Future<bool> switchModel(String modelPath, ModelVariant variant) async {
+    return await _bridge.switchModel(modelPath, variant);
   }
 
   Future<bool> startMic() async {
@@ -71,16 +86,7 @@ class ChatEngine {
 
     debugPrint('[Audio] Recording saved: $path');
 
-    try {
-      final response = await OpenAI.instance.audio.createTranscription(
-        file: File(path),
-        model: 'whisper-1',
-        language: 'es',
-      );
-      return response.text;
-    } catch (e) {
-      return 'Error al transcribir: $e';
-    }
+    return await _audioModel.transcribe(path);
   }
 
   Future<void> cancelMic() async {
@@ -92,13 +98,10 @@ class ChatEngine {
     return _loop.processMessage(text);
   }
 
-  void reset() {
-    _loop.reset();
-  }
-
   Future<void> dispose() async {
     _audioModel.dispose();
     await _audioRecorder.dispose();
+    await _bridge.dispose();
     await _server.stop();
   }
 }

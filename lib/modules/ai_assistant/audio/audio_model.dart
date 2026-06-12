@@ -3,30 +3,29 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:whisper_ggml/whisper_ggml.dart';
 
+import 'audio_config.dart';
+
 class AudioModel {
-  bool _loaded = false;
-  bool _initialized = false;
-  String? _modelPath;
   Whisper? _whisper;
+  late final AudioConfig _config;
+  bool _loaded = false;
 
   bool get isLoaded => _loaded;
-  bool get isInitialized => _initialized;
 
-  Future<bool> init(String modelPath) async {
-    _modelPath = modelPath;
-    _whisper = const Whisper(model: WhisperModel.small);
+  AudioModel({AudioConfig? config}) : _config = config ?? const AudioConfig();
 
-    if (!File(modelPath).existsSync()) {
+  Future<bool> init() async {
+    if (!File(_config.modelPath).existsSync()) {
       if (kDebugMode) {
-        print('[AudioModel] Model not found: $modelPath');
+        print('[AudioModel] Model not found: ${_config.modelPath}');
       }
       return false;
     }
 
+    _whisper = Whisper(model: _config.whisperModel);
     _loaded = true;
-    _initialized = true;
     if (kDebugMode) {
-      print('[AudioModel] Whisper model ready: $modelPath');
+      print('[AudioModel] Whisper model ready: ${_config.modelPath}');
     }
     return true;
   }
@@ -40,12 +39,11 @@ class AudioModel {
       final response = await _whisper!.transcribe(
         transcribeRequest: TranscribeRequest(
           audio: audioPath,
-          language: 'es',
+          language: _config.language,
           isTranslate: false,
         ),
-        modelPath: _modelPath!,
+        modelPath: _config.modelPath,
       );
-
       return response.text;
     } catch (e) {
       if (kDebugMode) {
@@ -57,8 +55,6 @@ class AudioModel {
 
   void dispose() {
     _loaded = false;
-    _initialized = false;
     _whisper = null;
-    _modelPath = null;
   }
 }

@@ -4,6 +4,7 @@ import 'package:flutter_chat_types/flutter_chat_types.dart' as types;
 import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 import '../models/react_event.dart';
 import '../services/chat_engine.dart';
+import '../services/llm_bridge.dart';
 import '../services/chat_theme.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -20,8 +21,14 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _initializing = true;
   bool _generating = false;
   bool _recording = false;
+  bool _switchingModel = false;
   StreamSubscription? _subscription;
   bool _serverReady = false;
+  bool _modelLoaded = false;
+  int _chatKey = 0;
+
+  static const _defaultModel = 'Qwen2.5 Coder 1.5B';
+  String _currentModelLabel = _defaultModel;
 
   @override
   void initState() {
@@ -32,45 +39,71 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _initChat() async {
     setState(() => _initializing = true);
 
+    await _engine.init();
     final serverOk = await _engine.startServer();
     if (!mounted) return;
 
     if (!serverOk) {
-      _addSystemMsg('Error al iniciar el servidor local');
+      _addSystemMsg('Error al iniciar el servidor de audio');
       setState(() => _initializing = false);
       return;
     }
-    final ok = await _engine.init('http://127.0.0.1:8080');
-    if (!mounted) return;
 
-    const llmPath =
-        '/storage/emulated/0/neuralqwen-2.5-1.5b-spanish.Q4_K_M.gguf';
-    const whisperPath = '/storage/emulated/0/ggml-small.bin';
-
-    final llmOk = await _engine.initLLMModel(llmPath);
-    final whisperOk = await _engine.initAudioModel(whisperPath);
+    final whisperOk = await _engine.initAudioModel();
 
     if (!mounted) return;
 
-    if (!llmOk) {
-      _addSystemMsg('Error: Modelo LLM no encontrado en $llmPath');
-    }
     if (!whisperOk) {
       _addSystemMsg(
-        'Advertencia: Modelo Whisper no encontrado en $whisperPath',
+        'Advertencia: Modelo Whisper no encontrado',
       );
     }
 
+    _addSystemMsg('Cargando herramientas...');
+    try {
+      await _engine.fetchTools(
+        'https://spkvgkwbfi.execute-api.us-east-1.amazonaws.com/dev/openapi.json',
+      );
+      _addSystemMsg('Herramientas cargadas');
+    } catch (e) {
+      _addSystemMsg('Advertencia: No se pudieron cargar herramientas: $e');
+    }
+
+    await _handleSwitchModel(_defaultModel);
+
     setState(() {
       _initializing = false;
-      _serverReady = ok;
+      _serverReady = serverOk;
+      _modelLoaded = true;
     });
+  }
+
+  Future<void> _handleSwitchModel(String label) async {
+    if ((label == _currentModelLabel && _modelLoaded) || _switchingModel) return;
+    setState(() => _switchingModel = true);
+    _addSystemMsg('Cargando $label...');
+    final info = LlmBridge.models[label]!;
+    final ok = _modelLoaded
+        ? await _engine.switchModel(info.path, info.variant)
+        : await _engine.initLLMModel(info.path, info.variant);
+    if (!mounted) return;
+    if (ok) {
+      setState(() {
+        _currentModelLabel = label;
+        _modelLoaded = true;
+      });
+      _addSystemMsg('Modelo cargado: $label');
+    } else {
+      _addSystemMsg('Error: No se pudo cargar $label');
+    }
+    setState(() => _switchingModel = false);
   }
 
   void _addSystemMsg(String text) {
     final now = DateTime.now().millisecondsSinceEpoch;
-    setState(
-      () => _messages.insert(
+    setState(() {
+      _chatKey++;
+      _messages.insert(
         0,
         types.TextMessage(
           author: const types.User(id: 'system', firstName: 'Sistema'),
@@ -78,8 +111,8 @@ class _ChatScreenState extends State<ChatScreen> {
           id: 'sys_$now',
           text: text,
         ),
-      ),
-    );
+      );
+    });
   }
 
   Future<void> _handleStartRecording() async {
@@ -120,7 +153,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _handleSendText(String text) {
     if (_generating) return;
-    setState(() => _generating = true);
+    if (!_modelLoaded) {
+      _addSystemMsg('Primero selecciona un modelo del menú superior');
+      return;
+    }
     final now = DateTime.now().millisecondsSinceEpoch;
     final userMsg = types.TextMessage(
       author: const types.User(id: 'user', firstName: 'You'),
@@ -128,7 +164,6 @@ class _ChatScreenState extends State<ChatScreen> {
       id: now.toString(),
       text: text,
     );
-    setState(() => _messages.insert(0, userMsg));
     final respId = 'resp_$now';
     final respMsg = types.TextMessage(
       author: const types.User(id: 'assistant', firstName: 'AI'),
@@ -136,36 +171,32 @@ class _ChatScreenState extends State<ChatScreen> {
       id: respId,
       text: '',
     );
-    setState(() => _messages.insert(0, respMsg));
-    String buffer = '';
-    bool errored = false;
+    setState(() {
+      _generating = true;
+      _chatKey++;
+      _messages.insert(0, userMsg);
+      _messages.insert(0, respMsg);
+    });
     _subscription?.cancel();
     _subscription = _engine
         .sendMessage(text)
         .listen(
           (event) {
-            if (event is ThoughtEvent) {
-              buffer += 'Pensamiento: ${event.message}\n';
-            } else if (event is ToolCallEvent) {
-              buffer += 'Herramienta: ${event.tool}(${event.args})\n';
-            } else if (event is ObservationEvent) {
-              buffer += 'Resultado: ${event.observation}\n';
-            } else if (event is AnswerTokenEvent) {
-              buffer += event.text;
+            if (event is AnswerTokenEvent) {
+              _updateMsg(respId, event.text);
             } else if (event is ErrorEvent) {
-              errored = true;
-              buffer = 'Error: ${event.error}';
+              _updateMsg(respId, 'Error: ${event.error}');
+              if (!mounted) return;
+              setState(() => _generating = false);
             }
-            _updateMsg(respId, buffer);
-            if (event is ErrorEvent) setState(() => _generating = false);
           },
           onError: (e) {
-            errored = true;
             _updateMsg(respId, 'Error: $e');
+            if (!mounted) return;
             setState(() => _generating = false);
           },
           onDone: () {
-            if (!errored) _updateMsg(respId, buffer);
+            if (!mounted) return;
             setState(() => _generating = false);
           },
         );
@@ -201,7 +232,7 @@ class _ChatScreenState extends State<ChatScreen> {
         children: [
           CircularProgressIndicator(),
           SizedBox(height: 16),
-          Text('Iniciando servidor local...', style: TextStyle(fontSize: 14)),
+          Text('Iniciando...', style: TextStyle(fontSize: 14)),
         ],
       ),
     );
@@ -272,10 +303,30 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('AI Assistant')),
+      appBar: AppBar(
+        title: DropdownButtonHideUnderline(
+          child: DropdownButton<String>(
+            value: _currentModelLabel,
+            isDense: true,
+            isExpanded: false,
+            dropdownColor: Colors.white,
+            style: const TextStyle(color: Colors.black87, fontSize: 14),
+            items: LlmBridge.models.keys.map((label) {
+              return DropdownMenuItem(
+                value: label,
+                child: Text(label, overflow: TextOverflow.ellipsis),
+              );
+            }).toList(),
+            onChanged: _switchingModel || _generating ? null : (label) {
+              if (label != null) _handleSwitchModel(label);
+            },
+          ),
+        ),
+      ),
       body: _initializing
           ? _buildLoading()
           : Chat(
+              key: ValueKey(_chatKey),
               messages: _messages,
               onSendPressed: (_) {},
               user: const types.User(id: 'user', firstName: 'You'),
