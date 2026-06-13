@@ -1,107 +1,48 @@
-import 'package:flutter/foundation.dart';
-import 'package:dart_openai/dart_openai.dart';
-
-import '../audio/audio_config.dart';
-import '../audio/audio_model.dart';
-import '../audio/audio_recorder.dart';
-import 'chat_loop.dart';
-import 'local_api_server.dart';
-import 'llm_bridge.dart';
-import 'tool_service.dart';
-import '../models/react_event.dart';
+import 'dart:async';
+import 'server_controller.dart';
+import 'llama_chat.dart';
 
 class ChatEngine {
-  final LlmBridge _bridge = LlmBridge();
-  late final LocalApiServer _server = LocalApiServer(_bridge);
-  final ChatLoop _loop = ChatLoop();
-  final AudioModel _audioModel;
-  final MicCapture _audioRecorder;
-  ToolService? _toolService;
+  ServerController? _server;
+  LlamaChat? _chat;
+  bool _modelLoaded = false;
+  ModelDef? _currentModel;
+  int _modelLoadTimeMs = 0;
 
-  bool _initialized = false;
-  bool _isRecording = false;
+  bool get isModelLoaded => _modelLoaded;
+  ModelDef? get currentModel => _currentModel;
+  int get modelLoadTimeMs => _modelLoadTimeMs;
+  GenerationParams get generationParams => _chat?.params ?? const GenerationParams();
 
-  bool get isReady => _initialized;
-  bool get isRecording => _isRecording;
-  AudioModel get audioModel => _audioModel;
-  MicCapture get audioRecorder => _audioRecorder;
-  LlmBridge get bridge => _bridge;
-  ToolService? get toolService => _toolService;
-
-  ChatEngine({AudioConfig? config})
-      : _audioModel = AudioModel(config: config),
-        _audioRecorder = MicCapture(config: config);
-
-  Future<void> fetchTools(String specUrl) async {
-    _toolService = ToolService(specUrl: specUrl);
-    await _toolService!.fetchTools();
-    _loop.setTools(_toolService!);
-    final systemPrompt = _toolService!.buildSystemPrompt(null);
-    _bridge.cacheSystemPrompt(systemPrompt);
-  }
-
-  Future<bool> init({String apiUrl = 'http://127.0.0.1:8080'}) async {
-    OpenAI.baseUrl = apiUrl;
-    OpenAI.apiKey = 'sk-noop';
-    OpenAI.requestsTimeOut = const Duration(minutes: 2);
-    _initialized = true;
-    return true;
-  }
-
-  Future<bool> startServer({int port = 8080}) async {
-    await _server.start(port: port);
-    return _server.isReady;
+  Future<void> startServer(ModelDef modelDef, {void Function(int elapsedMs)? onProgress}) async {
+    final sw = Stopwatch()..start();
+    _server = ServerController(modelDef);
+    await _server!.start();
+    while (!(await _server!.isRunning) && !(await _server!.isRunningHttp())) {
+      await Future.delayed(const Duration(milliseconds: 200));
+      onProgress?.call(sw.elapsedMilliseconds);
+      if (sw.elapsedMilliseconds > 120000) {
+        throw Exception('Timeout waiting for server');
+      }
+    }
+    _modelLoadTimeMs = sw.elapsedMilliseconds;
+    _chat = LlamaChat();
+    _currentModel = modelDef;
+    _modelLoaded = true;
   }
 
   Future<void> stopServer() async {
-    await _server.stop();
+    if (!_modelLoaded) return;
+    await _server!.stop();
+    _currentModel = null;
+    _modelLoaded = false;
   }
 
-  Future<bool> initAudioModel() async {
-    return await _audioModel.init();
-  }
-
-  Future<bool> initLLMModel(String modelPath, ModelVariant variant) async {
-    return await _bridge.load(modelPath, variant);
-  }
-
-  Future<bool> switchModel(String modelPath, ModelVariant variant) async {
-    return await _bridge.switchModel(modelPath, variant);
-  }
-
-  Future<bool> startMic() async {
-    final hasPermission = await _audioRecorder.requestPermission();
-    if (!hasPermission) return false;
-
-    await _audioRecorder.startRecording();
-    _isRecording = true;
-    return true;
-  }
-
-  Future<String> stopMicAndTranscribe() async {
-    _isRecording = false;
-    final path = await _audioRecorder.stopRecording();
-
-    if (path == null) return 'Error: No se pudo grabar audio';
-
-    debugPrint('[Audio] Recording saved: $path');
-
-    return await _audioModel.transcribe(path);
-  }
-
-  Future<void> cancelMic() async {
-    _isRecording = false;
-    await _audioRecorder.cancelRecording();
-  }
-
-  Stream<ReActEvent> sendMessage(String text) {
-    return _loop.processMessage(text);
+  Stream<GenerationChunk> sendMessage(String userMessage) {
+    return _chat!.generateStream(userMessage: userMessage);
   }
 
   Future<void> dispose() async {
-    _audioModel.dispose();
-    await _audioRecorder.dispose();
-    await _bridge.dispose();
-    await _server.stop();
+    await stopServer();
   }
 }

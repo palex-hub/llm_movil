@@ -206,13 +206,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "6.0.0"
-  flutter_llama:
-    dependency: "direct main"
-    description:
-      path: "packages/flutter_llama"
-      relative: true
-    source: path
-    version: "1.1.2"
   flutter_parsed_text:
     dependency: transitive
     description:

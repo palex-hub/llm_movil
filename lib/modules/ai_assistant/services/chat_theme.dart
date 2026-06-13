@@ -9,10 +9,10 @@ final chatTheme = DefaultChatTheme(
   backgroundColor: Color(0xFFF5F5F5),
   receivedMessageBodyTextStyle: const TextStyle(
     color: Colors.black87,
-    fontSize: 16,
+    fontSize: 12,
   ),
   sentMessageBodyTextStyle: const TextStyle(
     color: Colors.white,
-    fontSize: 16,
+    fontSize: 12,
   ),
 );
